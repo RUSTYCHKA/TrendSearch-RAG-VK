@@ -1,6 +1,8 @@
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from dataclasses import asdict
 
@@ -14,8 +16,48 @@ from app.parsers.vk import VKClient, normalize_domain
 def load_known_ids(path: Path) -> set[int]:
     if not path.exists():
         return set()
-    with path.open(encoding="utf-8") as f:
-        return {json.loads(line)["post_id"] for line in f if line.strip()}
+
+    content = path.read_text(encoding="utf-8")
+    lines = [line for line in content.splitlines() if line.strip()]
+    needs_migration = False
+    try:
+        records = [json.loads(line) for line in lines]
+    except json.JSONDecodeError:
+        records = []
+        needs_migration = True
+        decoder = json.JSONDecoder()
+        offset = 0
+        while offset < len(content):
+            while offset < len(content) and content[offset].isspace():
+                offset += 1
+            if offset == len(content):
+                break
+            record, offset = decoder.raw_decode(content, offset)
+            records.append(record)
+
+    known = set()
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("post_id"), int):
+            raise ValueError(f"Invalid post record in {path}: expected an integer post_id")
+        known.add(record["post_id"])
+    if needs_migration:
+        _write_jsonl(path, records)
+    return known
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            for record in records:
+                temp_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
 
 
 def main():
