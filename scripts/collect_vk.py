@@ -64,6 +64,7 @@ def main():
     parser = argparse.ArgumentParser(description="Collect posts from VK communities")
     parser.add_argument("domains", nargs="+", help="домены сообществ, например: vk_business")
     parser.add_argument("--max-posts", type=int, default=1000)
+    parser.add_argument("--min-words", type=int, default=40)
     args = parser.parse_args()
 
     out_dir = Path(RAW_DATA_DIR)
@@ -78,7 +79,7 @@ def main():
         print(f"[{domain}] уже в файле: {len(known)}")
 
         with path.open("a", encoding="utf-8") as f:
-            for post in client.fetch_posts(domain, args.max_posts):
+            for post in client.fetch_posts(domain, args.max_posts, args.min_words):
                 if post.post_id in known:
                     continue
                 f.write(json.dumps(asdict(post), ensure_ascii=False) + "\n")

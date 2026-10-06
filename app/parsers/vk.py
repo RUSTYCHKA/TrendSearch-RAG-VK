@@ -43,17 +43,25 @@ class VKClient:
         self._vk = session.get_api()
 
     def _request(self, method, **params):
+        """Вызов метода vk_api с повторами при временных ошибках."""
+        last_error = None
         for attempt in range(MAX_RETRIES):
             try:
                 return method(**params)
             except ApiError as e:
-                if e.code in RETRY_CODES:
-                    time.sleep(2 ** attempt)
-                    continue
-                raise
-            except requests.exceptions.RequestException:
-                time.sleep(2 ** attempt)
-        raise RuntimeError(f"VK request failed after {MAX_RETRIES} retries")
+                if e.code not in RETRY_CODES:
+                    raise   # постоянные ошибки (15, 100...) наружу
+                last_error = e
+            except requests.exceptions.RequestException as e:
+                last_error = e
+
+            delay = 2 ** attempt
+            print(f"  повтор {attempt + 1}/{MAX_RETRIES} через {delay} с: {last_error}")
+            time.sleep(delay)
+
+        raise RuntimeError(
+            f"VK request failed after {MAX_RETRIES} retries: {last_error!r}"
+        ) from last_error
 
     def get_group(self, domain: str) -> dict:
         domain = normalize_domain(domain)
@@ -63,7 +71,7 @@ class VKClient:
             raise ValueError(f"Сообщество '{domain}' не найдено")
         return groups[0]
 
-    def fetch_posts(self, domain: str, max_posts: int = 1000) -> Iterator[VKPost]:
+    def fetch_posts(self, domain: str, max_posts: int = 1000, min_words: int = 0) -> Iterator[VKPost]:
         domain = normalize_domain(domain)
         group = self.get_group(domain)
         group_id = group["id"]
@@ -83,7 +91,7 @@ class VKClient:
                 break
 
             for item in items:
-                post = _to_post(item, group_id, group_name, domain)
+                post = _to_post(item, group_id, group_name, domain, min_words)
                 if post is None:
                     continue
                 yield post
@@ -92,6 +100,7 @@ class VKClient:
                     return
 
             offset += PAGE_SIZE
+            time.sleep(0.5)
             if offset >= resp.get("count", 0):
                 break
 
@@ -101,11 +110,11 @@ def _make_title(text: str, limit: int = 80) -> str:
     return first_line if len(first_line) <= limit else first_line[:limit].rstrip() + "…"
 
 
-def _to_post(item: dict, group_id: int, group_name: str, domain: str) -> VKPost | None:
+def _to_post(item: dict, group_id: int, group_name: str, domain: str, min_words: int = 0) -> VKPost | None:
     if item.get("marked_as_ads"):
         return None
     text = (item.get("text") or "").strip()
-    if not text:
+    if not text or len(text.split()) < min_words:
         return None
 
     post_id = item["id"]
